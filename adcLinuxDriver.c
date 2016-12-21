@@ -1,43 +1,54 @@
+#include <linux/mm.h>
+#include <linux/kernel.h> 
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/device-mapper.h>
 #include <linux/io.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/mempool.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/dma-mapping.h>
+#include <linux/init.h>
+#include <linux/mman.h>
+#include <linux/vmalloc.h>
+#include <linux/mman.h>
+#include <linux/slab.h>
+#include <asm/io.h>
+#include <linux/sched.h>
+#include <linux/interrupt.h>
+#include <linux/ioport.h>
+#include <linux/irq.h>
+#include <linux/of_irq.h>
 
-#include <linux/iio/iio.h>
-#include <linux/iio/sysfs.h>
-#include <linux/iio/buffer.h>
-#include <linux/iio/trigger_consumer.h>
-#include <linux/iio/triggered_buffer.h>
-
-// Prototypes
+//Decaracion de funciones
 static int rghpadc_probe(struct platform_device *pdev);
 static int rghpadc_remove(struct platform_device *pdev);
 static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset);
 static ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset);
+static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma);
+static irqreturn_t controlInterrupciones(int irq, void* dev_id); 
 
-// An instance of this structure will be created for every custom_led IP in the system
+//ESTRUCTURA CON LOS DATOS INTERNOS DEL DRIVER
 struct rghpadc_dev {
     struct miscdevice miscdev;
-	struct iio_dev* iiodev;
-    void __iomem *regs;
-    u32 adc_value;
+    void __iomem *direccionRegistros;
+    u32 ultimoValorADC;
+	unsigned long paginaAUsar;
+	dma_addr_t direccionDMA;
+	int irqReportado;
 };
-
-// Specify which device tree devices this driver supports
+//ESTRUCTURA CON INFORMACION SOBRE QUE TIPO DE DISPOSITIVOS USAMOS
 static struct of_device_id rghpadc_dt_ids[] = {
     {
         .compatible = "rghpadc,rghpltc2308adc"
     },
     { /* end of table */ }
 };
-
-// Inform the kernel about the devices this driver supports
+//INFORMAR AL KERNEL QUE TIPO DE DISPOSITIVOS SOPORTAMOS
 MODULE_DEVICE_TABLE(of, rghpadc_dt_ids);
-
-// Data structure that links the probe and remove functions with our driver
+//INFORMAMOS EL ROL DE CADA FUNCION EN NUESTRO DRIVER
 static struct platform_driver rghpadc_platform = {
     .probe = rghpadc_probe,
     .remove = rghpadc_remove,
@@ -47,204 +58,181 @@ static struct platform_driver rghpadc_platform = {
         .of_match_table = rghpadc_dt_ids
     }
 };
-
-// The file operations that can be performed on the custom_leds character file
+//LAS OPERACIONES QUE PUEDEN REALZIARSE EN ESTOS DISPOSITIVOS
 static const struct file_operations rghpadc_fops = {
     .owner = THIS_MODULE,
     .read = rghpadc_read,
-    .write = rghpadc_write
+    .write = rghpadc_write,
+	.mmap = rghpadc_mmap
 };
-
-// Called when the driver is installed
+//funcion invocada cuando el driver es inicializado
 static int rghpadc_init(void)
 {
     int ret_val = 0;
-    pr_info("Initializing the rghpadc module\n");
+    pr_info("Inicializando el modulo rghpadc...\n");
 
-    // Register our driver with the "Platform Driver" bus
+    //Nuestor modul oes del tipo "Platform Driver",
+	//asi que lo registramos como tal
     ret_val = platform_driver_register(&rghpadc_platform);
     if(ret_val != 0) {
-        pr_err("platform_driver_register returned %d\n", ret_val);
+        pr_err("platform_driver_register retorno %d\n", ret_val);
         return ret_val;
     }
 
-    pr_info("rghpadc inicializado exitosamente!\n");
+    pr_info("Modulo rghpadc inicializado exitosamente!\n");
 
     return 0;
 }
-
-// Called whenever the kernel finds a new device that our driver can handle
-// (In our case, this should only get called for the one instantiation of the Custom LEDs module)
+//funcion invocada cuando el dispositivo a usar es encontrado
 static int rghpadc_probe(struct platform_device *pdev)
 {
-    int ret_val = -EBUSY;
+	int ret_val = -EBUSY;
     struct rghpadc_dev *dev;
     struct resource *r = 0;
-
-    pr_info("rghpadc_probe enter\n");
-
-    // Get the memory resources for this LED device
-    r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	int mapeadoRegistros_Size;
+	int interruptEnableRet;
+	pr_info("rghpadc_probe ingreso\n");
+	//OBTENER LOS RECURSOS DE MEMORIA PARA ESTE DISPOSITIVO
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     if(r == NULL) {
         pr_err("IORESOURCE_MEM (register space) does not exist\n");
         goto bad_exit_return;
     }
-
-    // Create structure to hold device-specific information (like the registers)
-    dev = devm_kzalloc(&pdev->dev, sizeof(struct rghpadc_dev), GFP_KERNEL);
-
-    // Both request and ioremap a memory region
-    // This makes sure nobody else can grab this memory region
-    // as well as moving it into our address space so we can actually use it
-    dev->regs = devm_ioremap_resource(&pdev->dev, r);
-    if(IS_ERR(dev->regs))
+	mapeadoRegistros_Size = r->end-r->start+1;
+	pr_info( "Size of regs memory map: %d\n", mapeadoRegistros_Size);
+	pr_info( "Size of PAGE_SIZE: %d\n",(int) PAGE_SIZE);
+	//CREAR LA ESTRUCTURA CON LOS DATOS DEL DRIVER
+	dev = devm_kzalloc(&pdev->dev, sizeof(struct rghpadc_dev), GFP_KERNEL);
+	//OBTENEMOS LA LINEA DE INTERRUPCION A USAR
+	dev->irqReportado = irq_of_parse_and_map(pdev->dev.of_node, 0);
+	pr_info( "irqReportado: %d\n", dev->irqReportado);
+	//REMAPEAR LOS REGISTROS A UNA SECCION ACCESIBLE
+	//POR EL KERNEL LINUX
+	dev->direccionRegistros = devm_ioremap_resource(&pdev->dev, r);
+    if(IS_ERR(dev->direccionRegistros))
         goto bad_ioremap;
-
-    // Turn the LEDs on (access the 0th register in the rghp module)
-    dev->adc_value = 0x0000U;
-    //iowrite32(dev->adc_value, dev->regs);
-
-    // Initialize the misc device (this is used to create a character file in userspace)
-    dev->miscdev.minor = MISC_DYNAMIC_MINOR;    // Dynamically choose a minor number
-    dev->miscdev.name = "rghpadc";
-    dev->miscdev.fops = &rghpadc_fops;
-
-    ret_val = misc_register(&dev->miscdev);
-    if(ret_val != 0) {
-        pr_info("Couldn't register misc device :(");
+	//INICIALIZAR EL VALOR ADC LEIDO
+	dev->ultimoValorADC = 0x0000U;
+	//REGISTRAR NUESTRO CONTROLADOR COMO "MISC"
+	dev->miscdev.minor = MISC_DYNAMIC_MINOR;
+	dev->miscdev.name = "rghpadc";
+	dev->miscdev.fops = &rghpadc_fops;
+	ret_val = misc_register(&dev->miscdev);
+	if(ret_val != 0) {
+        pr_info("No se pudo registrar el dispositivo misc :(");
         goto bad_exit_return;
     }
+	//REGISTRAR NUESTRA ESTRUCTURA CON NUESTRO DRIVER
+	platform_set_drvdata(pdev, (void*)dev);
+	//RESERVAR LA PAGINA  A USAR
+	dev->paginaAUsar = __get_free_pages( GFP_USER|GFP_KERNEL, 8);
+	if(dev->paginaAUsar==0){
+		pr_info("No se pudo pedir buffer para el dispositivo");
+		ret_val =  -EPERM ;
+        goto bad_exit_return;
+	}
+	pr_info( "Memoria para la comunicacion pedida con exito\n");
+	pr_info( "Direccion devuelta: %u\n", (unsigned int)dev->paginaAUsar);
+	pr_info( "Direccion pasada por __pa(): %u\n", (unsigned int)__pa(dev->paginaAUsar));
+	pr_info( "Direccion pasada por virt_to_phys(): %u\n", (unsigned int)virt_to_phys(dev->paginaAUsar));
+	dev->direccionDMA  = dma_map_single(&pdev->dev, dev->paginaAUsar, PAGE_SIZE, DMA_FROM_DEVICE);
+	if (dma_mapping_error(&pdev->dev, dev->direccionDMA)) {
+		pr_info("No se pudo realizar mapeado de memoria");
+		ret_val =  -EPERM ;
+		goto bad_exit_return;
+	}
+	pr_info( "Direccion para usar dada por dma_map_single(): %u\n", (unsigned int)dev->direccionDMA);
+	iowrite32( dev->direccionDMA, ((unsigned int*)dev->direccionRegistros)+1 );
+	//INIIALIZAR INTERRUPCIONES
+	interruptEnableRet = request_irq(dev->irqReportado, controlInterrupciones, IRQF_NO_SUSPEND, "rghpadc", dev);
+	if(interruptEnableRet){
+		pr_info("No se pudo inicializar la interrupcion %d, error: %d \n", dev->irqReportado, interruptEnableRet);
+	}
 
-	//INICIALIZAR LAPARTE IIO
-	//dev->iiodev = iio_device_alloc(0);
-	//if(dev->iiodev==0){
-	//	pr_info("Couldn't create iio dev struct :(");
-    //    goto bad_exit_return;
-	//}
-
-    // Give a pointer to the instance-specific data to the generic platform_device structure
-    // so we can access this data later on (for instance, in the read and write functions)
-    platform_set_drvdata(pdev, (void*)dev);
-
-    pr_info("rghpadc_probe exit\n");
-
-    return 0;
+	pr_info("rghpadc_probe, salida correcta :)\n");
+	return 0;
 
 bad_ioremap:
-   ret_val = PTR_ERR(dev->regs); 
+   ret_val = PTR_ERR(dev->direccionRegistros); 
 bad_exit_return:
-    pr_info("rghpadc_probe bad exit :(\n");
+    pr_info("rghpadc_probe finalizo con errroes :(\n");
     return ret_val;
 }
 
-// This function gets called whenever a read operation occurs on one of the character files
+//OPERACIONES DE LECTURA
 static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset)
 {
-    int success = 0;
-
-    /* 
-    * Get the custom_leds_dev structure out of the miscdevice structure.
-    *
-    * Remember, the Misc subsystem has a default "open" function that will set
-    * "file"s private data to the appropriate miscdevice structure. We then use the
-    * container_of macro to get the structure that miscdevice is stored inside of (which
-    * is our custom_leds_dev structure that has the current led value).
-    * 
-    * For more info on how container_of works, check out:
-    * http://linuxwell.com/2012/11/10/magical-container_of-macro/
-    */
-    struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
-
-    dev->adc_value = ioread32(dev->regs);
-    // Give the user the current led value
-    success = copy_to_user(buffer, &dev->adc_value, sizeof(dev->adc_value));
-
-    // If we failed to copy the value to userspace, display an error message
-    if(success != 0) {
-        pr_info("Failed to return current led value to userspace\n");
-        return -EFAULT; // Bad address error value. It's likely that "buffer" doesn't point to a good address
-    }
-
-    return 0; // "0" indicates End of File, aka, it tells the user process to stop reading
+	//int success = 0;
+	struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
+	//dma_sync_single_for_cpu(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
+	//dma_unmap_single(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
+	//dev->adc_value = *((unsigned int*)(dev->paginaAUsar));
+	//success = copy_to_user(buffer, &dev->adc_value, sizeof(dev->adc_value));
+	dev->ultimoValorADC = ioread32(dev->direccionRegistros);
+	pr_info("dato leido :)\n");
+	return 0;
 }
-
-// This function gets called whenever a write operation occurs on one of the character files
+//IMPLEMENTANDO MMAP
+static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
+	pr_info("rghpadc_mmap(), invocado\n");
+	struct mm_struct *mm = current->mm;
+	int resultadoRemap;
+	struct rghpadc_dev *dev = container_of(filp->private_data, struct rghpadc_dev, miscdev);
+	resultadoRemap = remap_pfn_range(vma, vma->vm_start, dev->direccionDMA>>PAGE_SHIFT, PAGE_SIZE, vma->vm_page_prot);
+	pr_info("remap_pfn_range() invocado\n");
+	if (resultadoRemap!=0){
+		return -EAGAIN;
+	}
+	pr_info("rghpadc_mmap(), fin invocacion\n");
+    return 0;
+}
+//WRITE(configurar)
 static ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset)
 {
-    //return -EPERM;
-    int success = 0;
-
-    /* 
-    * Get the custom_leds_dev structure out of the miscdevice structure.
-    *
-    * Remember, the Misc subsystem has a default "open" function that will set
-    * "file"s private data to the appropriate miscdevice structure. We then use the
-    * container_of macro to get the structure that miscdevice is stored inside of (which
-    * is our custom_leds_dev structure that has the current led value).
-    * 
-    * For more info on how container_of works, check out:
-    * http://linuxwell.com/2012/11/10/magical-container_of-macro/
-    */
-    struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
-
-    // Get the new led value (this is just the first byte of the given data)
-	u32 canalAUsar = 0; 
-    success = copy_from_user(&canalAUsar, buffer, sizeof(canalAUsar));
-
-    // If we failed to copy the value from userspace, display an error message
-    if(success != 0) {
-        pr_info("Failed to read led value from userspace\n");
-        return -EFAULT; // Bad address error value. It's likely that "buffer" doesn't point to a good address
-    } else {
-        // We read the data correctly, so update the LEDs
- 		pr_info("Configurando el canal a usar\n");
-        iowrite32(canalAUsar, dev->regs);
-    }
-
-    // Tell the user process that we wrote every byte they sent 
-    // (even if we only wrote the first value, this will ensure they don't try to re-write their data)
-    return len;
+    return 0;
 }
-
-// Gets called whenever a device this driver handles is removed.
-// This will also get called for each device being handled when 
-// our driver gets removed from the system (using the rmmod command).
+//CUANDO EL DISPOSITIVO SE PIERDE(nunca en el fpga...)
 static int rghpadc_remove(struct platform_device *pdev)
 {
-    // Grab the instance-specific information out of the platform device
-    struct rghpadc_dev *dev = (struct rghpadc_dev*)platform_get_drvdata(pdev);
-
-    pr_info("rghpadc_remove enter\n");
-
-	//Limpiar la parte de iio
-    //iio_device_free(dev->iiodev);
-
-    // Unregister the character file (remove it from /dev)
-    misc_deregister(&dev->miscdev);
-
-    pr_info("rghpadc_remove exit\n");
-
+	struct rghpadc_dev *dev = (struct rghpadc_dev*)platform_get_drvdata(pdev);
+	pr_info("rghpadc_remove enter\n");
+	free_irq(dev->irqReportado, dev);
+	free_pages( dev->paginaAUsar, 0 );
+	misc_deregister(&dev->miscdev);
+	pr_info("rghpadc_remove exit\n");
     return 0;
 }
 
-// Called when the driver is removed
+//CUANDO EL DRIVER SE DESINTALA(rmmod, apagando la pc)
 static void rghpadc_exit(void)
 {
     pr_info("rghpadc module exit\n");
-
-    // Unregister our driver from the "Platform Driver" bus
-    // This will cause "leds_remove" to be called for each connected device
     platform_driver_unregister(&rghpadc_platform);
-
     pr_info("rghpadc module successfully unregistered\n");
 }
 
-// Tell the kernel which functions are the initialization and exit functions
+//FUNCION INVOCADA CUANDO HAY UNA INTERRUPCION
+static irqreturn_t controlInterrupciones(int irq, void* dev_id){
+	struct rghpadc_dev* dev = (struct rghpadc_dev*)dev_id;
+	iowrite32( 0xFFFFFFFFU, ((unsigned int*)dev->direccionRegistros)+2 );
+	//printk( KERN_INFO "Interrupcion recibida\n");
+	return IRQ_HANDLED;
+}
+
+
+//LE DECIMOS AL KERNELCUALES SON LAS FUNCIONES DE INICIALIZACION
+//Y FINALIZACION DEL DRIVER
 module_init(rghpadc_init);
 module_exit(rghpadc_exit);
-
-// Define information about this kernel module
+//METADATOS SOBRE ESTE MODULO DEL KERNEL
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Raul Huertas <rax2003_7@hotmail.com>");
-MODULE_DESCRIPTION("Exposes a character device to user space that lets users turn LEDs on and off");
+MODULE_DESCRIPTION("Driver de un conversor ADC");
 MODULE_VERSION("1.0");
+
+
+
+
+
+
+

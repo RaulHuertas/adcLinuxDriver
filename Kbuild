@@ -1,1 +1,2 @@
-obj-m := adcLinuxDriver.o adcLinuxDriver_ioctl.o
+obj-m := rghpadcDriver.o
+rghpadcDriver-objs := adcLinuxDriver.o adcLinuxDriver_ioctl.o

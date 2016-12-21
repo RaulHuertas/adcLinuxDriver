@@ -1,3 +1,5 @@
+#ifndef ADCLINUXDRIVER_H
+#define ADCLINUXDRIVER_H
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 
@@ -13,4 +15,4 @@ irqreturn_t controlInterrupciones(int irq, void* dev_id);
 long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg);
 
 
-
+#endif //ADCLINUXDRIVER_H

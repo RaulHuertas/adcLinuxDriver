@@ -79,7 +79,7 @@ static int rghpadc_init(void)
     return 0;
 }
 //funcion invocada cuando el dispositivo a usar es encontrado
-static int rghpadc_probe(struct platform_device *pdev)
+int rghpadc_probe(struct platform_device *pdev)
 {
 	int ret_val = -EBUSY;
     struct rghpadc_dev *dev;
@@ -155,7 +155,7 @@ bad_exit_return:
 }
 
 //OPERACIONES DE LECTURA
-static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset)
+ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset)
 {
 	int success = 0;
 	struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
@@ -172,11 +172,14 @@ static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t 
 	return len;
 }
 //IMPLEMENTANDO MMAP
-static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
-	pr_info("rghpadc_mmap(), invocado\n");
-	struct mm_struct *mm = current->mm;
+int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
+	
+	//struct mm_struct *mm = current->mm;
 	int resultadoRemap;
-	struct rghpadc_dev *dev = container_of(filp->private_data, struct rghpadc_dev, miscdev);
+	struct rghpadc_dev* dev;
+
+	pr_info("rghpadc_mmap(), invocado\n");
+	dev = (struct rghpadc_dev*)container_of(filp->private_data, struct rghpadc_dev, miscdev);
 	resultadoRemap = remap_pfn_range(vma, vma->vm_start, dev->direccionDMA>>PAGE_SHIFT, PAGE_SIZE, vma->vm_page_prot);
 	pr_info("remap_pfn_range() invocado\n");
 	if (resultadoRemap!=0){
@@ -186,24 +189,16 @@ static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
     return 0;
 }
 
-static long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
-	if(
-		(cmd<0) ||
-		(cmd>3)
-	){
-		return -EINVAL;
-	}
-	
-}
+
 
 
 //WRITE(configurar)
-static ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset)
+ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset)
 {
     return len;
 }
 //CUANDO EL DISPOSITIVO SE PIERDE(nunca en el fpga...)
-static int rghpadc_remove(struct platform_device *pdev)
+int rghpadc_remove(struct platform_device *pdev)
 {
 	struct rghpadc_dev *dev = (struct rghpadc_dev*)platform_get_drvdata(pdev);
 	pr_info("rghpadc_remove enter\n");
@@ -223,7 +218,7 @@ static void rghpadc_exit(void)
 }
 
 //FUNCION INVOCADA CUANDO HAY UNA INTERRUPCION
-static irqreturn_t controlInterrupciones(int irq, void* dev_id){
+irqreturn_t controlInterrupciones(int irq, void* dev_id){
 	struct rghpadc_dev* dev = (struct rghpadc_dev*)dev_id;
 	iowrite32( 0xFFFFFFFFU, ((unsigned int*)dev->direccionRegistros)+2 );
 	//printk( KERN_INFO "Interrupcion recibida\n");

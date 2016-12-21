@@ -135,6 +135,7 @@ int rghpadc_probe(struct platform_device *pdev)
 	if(interruptEnableRet){
 		pr_info("No se pudo inicializar la interrupcion %d, error: %d \n", dev->irqReportado, interruptEnableRet);
 	}
+	dev->ultimaConfig = 0;
 
 	pr_info("rghpadc_probe, salida correcta :)\n");
 	return 0;

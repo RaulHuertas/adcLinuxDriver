@@ -9,6 +9,7 @@ long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
 	int err = 0, tmp;
 	int retval = 0;
 	u32 valorAEscribir = 0;
+	u32 actualConfig = 0;
 	struct rghpadc_dev* dev;
 
 	if (_IOC_TYPE(cmd) != RGHPADC_IOC_MAGIC) return -ENOTTY;
@@ -22,9 +23,11 @@ long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
 	dev = (struct rghpadc_dev*)container_of(filp->private_data, struct rghpadc_dev, miscdev);
 	 
 	switch(cmd){
-		case RGHPADC_CONFIG:{
+		case RGHPADC_CAMBIAR_PUERTO:{
 			retval = __get_user(valorAEscribir, (u32 __user *)arg);
-			iowrite32( retval, ((unsigned int*)dev->direccionRegistros)+0 );
+			valorAEscribir &= 0x07U;
+			dev->ultimaConfig = valorAEscribir;
+			iowrite32( valorAEscribir, ((unsigned int*)dev->direccionRegistros)+0 );
 			break;
 		}
 		case RGHPADC_CHANGEADDRESS:{

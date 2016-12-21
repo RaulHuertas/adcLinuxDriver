@@ -8,6 +8,7 @@ struct rghpadc_dev {
     struct miscdevice miscdev;
     void __iomem *direccionRegistros;
     u32 ultimoValorADC;
+	u32 ultimaConfig;
 	unsigned long paginaAUsar;
 	dma_addr_t direccionDMA;
 	int irqReportado;

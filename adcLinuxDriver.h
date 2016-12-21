@@ -3,7 +3,15 @@
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 
-
+//ESTRUCTURA CON LOS DATOS INTERNOS DEL DRIVER
+struct rghpadc_dev {
+    struct miscdevice miscdev;
+    void __iomem *direccionRegistros;
+    u32 ultimoValorADC;
+	unsigned long paginaAUsar;
+	dma_addr_t direccionDMA;
+	int irqReportado;
+};
 
 //Decaracion de funciones
 int rghpadc_probe(struct platform_device *pdev);

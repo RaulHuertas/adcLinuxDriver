@@ -21,14 +21,8 @@
 #include <linux/ioport.h>
 #include <linux/irq.h>
 #include <linux/of_irq.h>
+#include "adcLinuxDriver.h"
 
-//Decaracion de funciones
-static int rghpadc_probe(struct platform_device *pdev);
-static int rghpadc_remove(struct platform_device *pdev);
-static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset);
-static ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset);
-static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma);
-static irqreturn_t controlInterrupciones(int irq, void* dev_id); 
 
 //ESTRUCTURA CON LOS DATOS INTERNOS DEL DRIVER
 struct rghpadc_dev {
@@ -63,7 +57,8 @@ static const struct file_operations rghpadc_fops = {
     .owner = THIS_MODULE,
     .read = rghpadc_read,
     .write = rghpadc_write,
-	.mmap = rghpadc_mmap
+	.mmap = rghpadc_mmap,
+	.unlocked_ioctl = rghpadc_ioctl
 };
 //funcion invocada cuando el driver es inicializado
 static int rghpadc_init(void)
@@ -162,15 +157,19 @@ bad_exit_return:
 //OPERACIONES DE LECTURA
 static ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset)
 {
-	//int success = 0;
+	int success = 0;
 	struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
 	//dma_sync_single_for_cpu(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
 	//dma_unmap_single(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
 	//dev->adc_value = *((unsigned int*)(dev->paginaAUsar));
 	//success = copy_to_user(buffer, &dev->adc_value, sizeof(dev->adc_value));
 	dev->ultimoValorADC = ioread32(dev->direccionRegistros);
-	pr_info("dato leido :)\n");
-	return 0;
+	success = copy_to_user(buffer, &dev->ultimoValorADC, sizeof(dev->ultimoValorADC));
+	if(success != 0) {
+        pr_info("Failed to return current led value to userspace\n");
+        return -EFAULT; // Bad address error value. It's likely that "buffer" doesn't point to a good address
+    }
+	return len;
 }
 //IMPLEMENTANDO MMAP
 static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
@@ -186,10 +185,22 @@ static int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
 	pr_info("rghpadc_mmap(), fin invocacion\n");
     return 0;
 }
+
+static long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
+	if(
+		(cmd<0) ||
+		(cmd>3)
+	){
+		return -EINVAL;
+	}
+	
+}
+
+
 //WRITE(configurar)
 static ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset)
 {
-    return 0;
+    return len;
 }
 //CUANDO EL DISPOSITIVO SE PIERDE(nunca en el fpga...)
 static int rghpadc_remove(struct platform_device *pdev)

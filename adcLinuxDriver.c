@@ -135,6 +135,8 @@ int rghpadc_probe(struct platform_device *pdev)
 	if(interruptEnableRet){
 		pr_info("No se pudo inicializar la interrupcion %d, error: %d \n", dev->irqReportado, interruptEnableRet);
 	}
+	//VERIFICAR QUE AL PRINCIPIO SE ESTE USANDO EL CANAL 0
+	iowrite32( 0, ((unsigned int*)dev->direccionRegistros)+0 );
 	dev->ultimaConfig = 0;
 
 	pr_info("rghpadc_probe, salida correcta :)\n");
@@ -182,9 +184,6 @@ int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
     return 0;
 }
 
-
-
-
 //WRITE(configurar)
 ssize_t rghpadc_write(struct file *file, const char *buffer, size_t len, loff_t *offset)
 {
@@ -214,10 +213,9 @@ static void rghpadc_exit(void)
 irqreturn_t controlInterrupciones(int irq, void* dev_id){
 	struct rghpadc_dev* dev = (struct rghpadc_dev*)dev_id;
 	iowrite32( 0xFFFFFFFFU, ((unsigned int*)dev->direccionRegistros)+2 );
-	//printk( KERN_INFO "Interrupcion recibida\n");
+	printk( KERN_INFO "Interrupcion recibida\n");
 	return IRQ_HANDLED;
 }
-
 
 //LE DECIMOS AL KERNELCUALES SON LAS FUNCIONES DE INICIALIZACION
 //Y FINALIZACION DEL DRIVER

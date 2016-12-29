@@ -45,6 +45,18 @@ long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
 			__put_user(dev->ultimoValorADC, (u32 __user *)arg);
 			break;
 		}
+		case RGHPADC_INICIAR_CAPTURA:{
+			valorAEscribir = dev->ultimaConfig;
+			valorAEscribir |= 0x80000000U;
+			iowrite32( valorAEscribir, ((unsigned int*)dev->direccionRegistros)+0 );
+			break;
+		}
+		case RGHPADC_REINICIAR:{
+			valorAEscribir = dev->ultimaConfig;
+			valorAEscribir |= 0x40000000U;
+			iowrite32( valorAEscribir, ((unsigned int*)dev->direccionRegistros)+0 );
+			break;
+		}
 		default: { /* redundant, as cmd was checked against MAXNR */
     		return -ENOTTY;
 		}

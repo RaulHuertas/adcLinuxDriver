@@ -23,8 +23,6 @@
 #include <linux/of_irq.h>
 #include "adcLinuxDriver.h"
 
-
-
 //ESTRUCTURA CON INFORMACION SOBRE QUE TIPO DE DISPOSITIVOS USAMOS
 static struct of_device_id rghpadc_dt_ids[] = {
     {
@@ -74,6 +72,7 @@ static int rghpadc_init(void)
 int rghpadc_probe(struct platform_device *pdev)
 {
 	int ret_val = -EBUSY;
+	int order_PaginasAUsar = 8;
     struct rghpadc_dev *dev;
     struct resource *r = 0;
 	int mapeadoRegistros_Size;
@@ -98,6 +97,11 @@ int rghpadc_probe(struct platform_device *pdev)
 	dev->direccionRegistros = devm_ioremap_resource(&pdev->dev, r);
     if(IS_ERR(dev->direccionRegistros))
         goto bad_ioremap;
+	dev->buff_tail = 0;
+	dev->buff_head = 0;
+	dev->burst_size = 32768;
+	dev->buff_size = (1<<order_PaginasAUsar)*PAGE_SIZE;
+	spin_lock_init(&dev->buff_lock);
 	//INICIALIZAR EL VALOR ADC LEIDO
 	dev->ultimoValorADC = 0x0000U;
 	//REGISTRAR NUESTRO CONTROLADOR COMO "MISC"
@@ -112,7 +116,7 @@ int rghpadc_probe(struct platform_device *pdev)
 	//REGISTRAR NUESTRA ESTRUCTURA CON NUESTRO DRIVER
 	platform_set_drvdata(pdev, (void*)dev);
 	//RESERVAR LA PAGINA  A USAR
-	dev->paginaAUsar = __get_free_pages( GFP_USER|GFP_KERNEL, 8);
+	dev->paginaAUsar = __get_free_pages( GFP_USER|GFP_KERNEL, order_PaginasAUsar);
 	if(dev->paginaAUsar==0){
 		pr_info("No se pudo pedir buffer para el dispositivo");
 		ret_val =  -EPERM ;
@@ -122,7 +126,7 @@ int rghpadc_probe(struct platform_device *pdev)
 	pr_info( "Direccion devuelta: %u\n", (unsigned int)dev->paginaAUsar);
 	pr_info( "Direccion pasada por __pa(): %u\n", (unsigned int)__pa(dev->paginaAUsar));
 	pr_info( "Direccion pasada por virt_to_phys(): %u\n", (unsigned int)virt_to_phys(dev->paginaAUsar));
-	dev->direccionDMA  = dma_map_single(&pdev->dev, dev->paginaAUsar, PAGE_SIZE, DMA_FROM_DEVICE);
+	dev->direccionDMA  = dma_map_single(&pdev->dev, dev->paginaAUsar, dev->buff_size, DMA_FROM_DEVICE);
 	if (dma_mapping_error(&pdev->dev, dev->direccionDMA)) {
 		pr_info("No se pudo realizar mapeado de memoria");
 		ret_val =  -EPERM ;
@@ -137,7 +141,7 @@ int rghpadc_probe(struct platform_device *pdev)
 	}
 	//VERIFICAR QUE AL PRINCIPIO SE ESTE USANDO EL CANAL 0
 	iowrite32( 0, ((unsigned int*)dev->direccionRegistros)+0 );
-	dev->ultimaConfig = 0;
+	
 
 	pr_info("rghpadc_probe, salida correcta :)\n");
 	return 0;
@@ -149,23 +153,6 @@ bad_exit_return:
     return ret_val;
 }
 
-//OPERACIONES DE LECTURA
-ssize_t rghpadc_read(struct file *file, char *buffer, size_t len, loff_t *offset)
-{
-	int success = 0;
-	struct rghpadc_dev *dev = container_of(file->private_data, struct rghpadc_dev, miscdev);
-	//dma_sync_single_for_cpu(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
-	//dma_unmap_single(dev->miscdev.this_device, dev->direccionDMA, PAGE_SIZE, DMA_FROM_DEVICE);
-	//dev->adc_value = *((unsigned int*)(dev->paginaAUsar));
-	//success = copy_to_user(buffer, &dev->adc_value, sizeof(dev->adc_value));
-	dev->ultimoValorADC = ioread32(dev->direccionRegistros);
-	success = copy_to_user(buffer, &dev->ultimoValorADC, sizeof(dev->ultimoValorADC));
-	if(success != 0) {
-        pr_info("Failed to return current led value to userspace\n");
-        return -EFAULT; // Bad address error value. It's likely that "buffer" doesn't point to a good address
-    }
-	return len;
-}
 //IMPLEMENTANDO MMAP
 int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
 	
@@ -175,7 +162,7 @@ int rghpadc_mmap(struct file *filp, struct vm_area_struct *vma){
 
 	pr_info("rghpadc_mmap(), invocado\n");
 	dev = (struct rghpadc_dev*)container_of(filp->private_data, struct rghpadc_dev, miscdev);
-	resultadoRemap = remap_pfn_range(vma, vma->vm_start, dev->direccionDMA>>PAGE_SHIFT, PAGE_SIZE, vma->vm_page_prot);
+	resultadoRemap = remap_pfn_range(vma, vma->vm_start, dev->direccionDMA>>PAGE_SHIFT, dev->buff_size, vma->vm_page_prot);
 	pr_info("remap_pfn_range() invocado\n");
 	if (resultadoRemap!=0){
 		return -EAGAIN;
@@ -194,6 +181,7 @@ int rghpadc_remove(struct platform_device *pdev)
 {
 	struct rghpadc_dev *dev = (struct rghpadc_dev*)platform_get_drvdata(pdev);
 	pr_info("rghpadc_remove enter\n");
+	dma_unmap_single(dev->miscdev.this_device, dev->direccionDMA, dev->buff_size, DMA_FROM_DEVICE);
 	free_irq(dev->irqReportado, dev);
 	free_pages( dev->paginaAUsar, 0 );
 	misc_deregister(&dev->miscdev);
@@ -209,13 +197,7 @@ static void rghpadc_exit(void)
     pr_info("rghpadc module successfully unregistered\n");
 }
 
-//FUNCION INVOCADA CUANDO HAY UNA INTERRUPCION
-irqreturn_t controlInterrupciones(int irq, void* dev_id){
-	struct rghpadc_dev* dev = (struct rghpadc_dev*)dev_id;
-	iowrite32( 0xFFFFFFFFU, ((unsigned int*)dev->direccionRegistros)+2 );
-	printk( KERN_INFO "Interrupcion recibida\n");
-	return IRQ_HANDLED;
-}
+
 
 //LE DECIMOS AL KERNELCUALES SON LAS FUNCIONES DE INICIALIZACION
 //Y FINALIZACION DEL DRIVER

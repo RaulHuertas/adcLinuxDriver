@@ -8,6 +8,7 @@ long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
 	
 	int err = 0, tmp;
 	int retval = 0;
+	u32 valorParaElUsuario = 0;
 	u32 valorAEscribir = 0;
 	u32 actualConfig = 0;
 	struct rghpadc_dev* dev;
@@ -55,6 +56,16 @@ long rghpadc_ioctl( struct file* filp, unsigned int cmd, unsigned long arg){
 			valorAEscribir = dev->ultimaConfig;
 			valorAEscribir |= 0x40000000U;
 			iowrite32( valorAEscribir, ((unsigned int*)dev->direccionRegistros)+0 );
+			break;
+		}
+		case RGHPADC_MEJORDIMLECTURA:{
+			valorParaElUsuario = 0100000;//15 bits en cero
+			__put_user(valorParaElUsuario, (u32 __user *)arg);
+			break;
+		}
+		case RGHPADC_DIMTOTAL:{
+			valorParaElUsuario = 0x100000;//20 bits en cero
+			__put_user(valorParaElUsuario, (u32 __user *)arg);
 			break;
 		}
 		default: { /* redundant, as cmd was checked against MAXNR */

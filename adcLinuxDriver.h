@@ -2,6 +2,8 @@
 #define ADCLINUXDRIVER_H
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
+#include <linux/irq.h>
+#include <linux/interrupt.h>
 
 //ESTRUCTURA CON LOS DATOS INTERNOS DEL DRIVER
 struct rghpadc_dev {
@@ -12,6 +14,11 @@ struct rghpadc_dev {
 	unsigned long paginaAUsar;
 	dma_addr_t direccionDMA;
 	int irqReportado;
+	unsigned long buff_tail;
+	unsigned long buff_head;
+	unsigned long buff_size;
+	unsigned long burst_size;
+	spinlock_t buff_lock;
 };
 
 //Decaracion de funciones

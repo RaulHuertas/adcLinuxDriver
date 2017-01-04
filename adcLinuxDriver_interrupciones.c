@@ -22,7 +22,7 @@ irqreturn_t controlInterrupciones(int irq, void* dev_id){
 		  	((head + dev->burst_size) & (dev->buff_size - 1))
 		);
 	}else{
-		printk( KERN_INFO "buffer lleno :(\n");
+		//printk( KERN_INFO "buffer lleno :(\n");
 	}
 
 	spin_unlock(&dev->buff_lock);

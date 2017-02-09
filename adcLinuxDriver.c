@@ -77,6 +77,7 @@ int rghpadc_probe(struct platform_device *pdev)
     struct resource *r = 0;
 	int mapeadoRegistros_Size;
 	int interruptEnableRet;
+	u32 registrosReflexion;
 	pr_info("rghpadc_probe ingreso\n");
 	//OBTENER LOS RECURSOS DE MEMORIA PARA ESTE DISPOSITIVO
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -97,9 +98,20 @@ int rghpadc_probe(struct platform_device *pdev)
 	dev->direccionRegistros = devm_ioremap_resource(&pdev->dev, r);
     if(IS_ERR(dev->direccionRegistros))
         goto bad_ioremap;
+	//Lectura de parametros de reflexion
+	registrosReflexion = ioread32( ((u32*)dev->direccionRegistros)+1 );
+	pr_info( "Registros de reflexion: %u\n", (unsigned int)registrosReflexion);
+	dev->anchoDatos = registrosReflexion & 0x7FU; registrosReflexion>>=7;
+	dev->orden_almacenamientoNotificaciones = registrosReflexion & 0x7FU; registrosReflexion>>=7;
+	dev->orden_almacenamientoTotal = registrosReflexion & 0x7FU; registrosReflexion>>=7;
+	pr_info( "Reflxn:, ancho de datos: %u\n", (unsigned int)dev->anchoDatos);
+	pr_info( "Reflxn:, orden notificaciones: %u\n", (unsigned int)dev->orden_almacenamientoNotificaciones);
+	pr_info( "Reflxn:, prden capacidad total: %u\n", (unsigned int)dev->orden_almacenamientoTotal);
+	order_PaginasAUsar = dev->orden_almacenamientoTotal-PAGE_SHIFT;
+
 	dev->buff_tail = 0;
 	dev->buff_head = 0;
-	dev->burst_size = 32768;
+	dev->burst_size = 1<<dev->orden_almacenamientoNotificaciones;
 	dev->buff_size = (1<<order_PaginasAUsar)*PAGE_SIZE;
 	spin_lock_init(&dev->buff_lock);
 	//INICIALIZAR EL VALOR ADC LEIDO
@@ -134,6 +146,8 @@ int rghpadc_probe(struct platform_device *pdev)
 	}
 	pr_info( "Direccion para usar dada por dma_map_single(): %u\n", (unsigned int)dev->direccionDMA);
 	iowrite32( dev->direccionDMA, ((unsigned int*)dev->direccionRegistros)+1 );
+
+	
 	//INIIALIZAR INTERRUPCIONES
 	interruptEnableRet = request_irq(dev->irqReportado, controlInterrupciones, IRQF_NO_SUSPEND, "rghpadc", dev);
 	if(interruptEnableRet){

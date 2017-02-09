@@ -19,6 +19,9 @@ struct rghpadc_dev {
 	unsigned long buff_size;
 	unsigned long burst_size;
 	spinlock_t buff_lock;
+	u32 anchoDatos;
+	u32 orden_almacenamientoNotificaciones;
+	u32 orden_almacenamientoTotal;
 };
 
 //Decaracion de funciones
